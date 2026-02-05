@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # 1. Сервис OLLAMA (Общий для обоих)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - app-network
+    restart: unless-stopped
+
+
+  # 2. Сервис API (Backend / BPMN_model)
+  api:
+    # Мы собираем образ из папки backend, но даем ему имя как у вас
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: fpni9255/megaschool-api:latest
+    container_name: api
+    ports:
+      - "8000:8000"
+    environment:
+      # Важно: внутри Docker-сети обращаемся по имени сервиса 'ollama'
+      - OLLAMA_HOST=http://ollama:11434
+      - LOG_LEVEL=info
+    depends_on:
+      - ollama
+    volumes:
+      # Проброс кода для разработки (Hot Reload), если нужно
+      - ./backend:/app
+      # Исключаем папку venv, чтобы не было конфликтов Linux vs Windows
+      - /app/.venv
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # 3. Сервис Frontend (Streamlit / megaschool_back)
+  streamlit:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ui
+    ports:
+      - "8501:8501"
+    environment:
+      # Обращаемся к API по имени сервиса 'api'
+      - API_URL=http://api:8000
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    depends_on:
+      - api
+    volumes:
+      - ./frontend:/app
+      - /app/.venv
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  ollama_data:
+    driver: local

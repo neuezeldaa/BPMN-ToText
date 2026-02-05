@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+*.pth
+*.pt
+backend/data/*.pth
+backend/data/*.pt
+ollama_data/
