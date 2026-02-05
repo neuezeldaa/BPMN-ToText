@@ -11,7 +11,6 @@ from rfdetr import RFDETRNano
 
 app = FastAPI(version="1.0.0")
 
-# --- КОНФИГУРАЦИЯ ---
 MODEL_NAME = "qwen2.5vl:3b-q4_K_M"
 WEIGHTS_PATH = "data/checkpoint_best_total_40.pth"
 THRESHOLD = 0.35

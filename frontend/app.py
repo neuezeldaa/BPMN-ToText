@@ -94,7 +94,6 @@ def page_image_to_text():
                         else:
                             headers = '<th style="width: 10%;">№</th><th style="width: 90%;">Действие</th>'
 
-                        # Метрика времени
                         exec_time = result.get('execution_time', 0)
                         st.success(f"Обработка завершена за {exec_time:.2f} сек")
 
@@ -146,12 +145,6 @@ def page_text_to_diagram():
         if generate_btn and text_input:
             with st.spinner("AI генерирует Mermaid код..."):
                 try:
-                    # РЕАЛЬНЫЙ ВЫЗОВ API (раскомментируйте, когда добавите endpoint)
-                    # payload = {"text": text_input}
-                    # resp = requests.post(f"{API_URL}/generate_bpmn", json=payload, timeout=60)
-                    # mermaid_code = resp.json().get("mermaid_code")
-
-                    # ЗАГЛУШКА (удалить после интеграции)
                     import time
                     time.sleep(0.5)
                     mermaid_code = """
@@ -164,7 +157,6 @@ def page_text_to_diagram():
                         D --> End
                     """
 
-                    # Вывод кода
                     with st.expander("Исходный код Mermaid"):
                         st.code(mermaid_code, language='mermaid')
 

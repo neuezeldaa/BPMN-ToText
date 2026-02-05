@@ -88,7 +88,6 @@ def qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME)
 
         text = (resp.get("message", {}) or {}).get("content", "").strip()
 
-        # Сохраняем результат, даже если текст пустой (чтобы видеть детекцию)
         results.append({
             "text": text,
             "class": class_name,
@@ -101,18 +100,13 @@ def qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME)
 
 
 def process_tasks_with_roles(results, direction):
-    # --- НАСТРОЙКА ID КЛАССОВ ---
-    # Поменяйте эти цифры, если DEBUG покажет другие ID
     LANE_CLASS_ID = 1
     TASK_CLASS_ID = 2
 
-    # 1. Разделяем найденные объекты
     lanes = [r for r in results if r["class_id"] == LANE_CLASS_ID]
 
-    # Считаем "задачами" всё, что НЕ лейны (чтобы не потерять Events, Gateways)
     tasks = [r for r in results if r["class_id"] != LANE_CLASS_ID]
 
-    # Если лэйнов нет, возвращаем просто список задач, чтобы не было пустого экрана
     if not lanes:
         print("\n[INFO] Lanes (Class ID 1) not found. Skipping role assignment.")
         return tasks
@@ -126,12 +120,10 @@ def process_tasks_with_roles(results, direction):
 
             is_inside = False
             if direction == "lr":
-                # Для горизонтальной: проверяем попадание центра объекта по Y
                 t_center_y = (ty1 + ty2) / 2
                 if ly1 <= t_center_y <= ly2:
                     is_inside = True
-            else:  # td
-                # Для вертикальной: проверяем попадание центра объекта по X
+            else:
                 t_center_x = (tx1 + tx2) / 2
                 if lx1 <= t_center_x <= lx2:
                     is_inside = True
@@ -140,7 +132,6 @@ def process_tasks_with_roles(results, direction):
                 candidate_lanes.append(lane)
 
         if candidate_lanes:
-            # Если подходит несколько лэйнов, берем самый узкий (вложенный)
             if len(candidate_lanes) > 1:
                 if direction == "lr":
                     candidate_lanes.sort(key=lambda l: (l["box"][3] - l["box"][1]))
@@ -164,8 +155,6 @@ def show_annotated_objects(image, detections):
         print(f"Visualization error: {e}")
 
 
-# --- MAIN ---
-
 print("Loading RFDETR model...")
 model = RFDETRNano(pretrain_weights=WEIGHTS_PATH)
 model.optimize_for_inference()
@@ -184,30 +173,26 @@ width, height = image.size
 direction = "lr" if width > height else "td"
 print(f"Processing image {width}x{height}. Assumed direction: {direction.upper()}")
 
-# 1. Детекция
+
 detections = model.predict(image, threshold=THRESHOLD)
 print(f"Detections found: {len(detections.xyxy)}")
-# show_annotated_objects(image, detections) # Раскомментировать для показа картинки
 
-# 2. OCR (для всех объектов)
+
 all_results = qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME)
 
-# --- DEBUG PRINT ---
-print("\n--- DEBUG: ALL DETECTED OBJECTS ---")
+
+print("\nALL DETECTED OBJECTS")
 for r in all_results:
     print(f"ID: {r['class_id']} | Text: '{r['text']}' | Box: {r['box']}")
-print("-----------------------------------\n")
 
-# 3. Сопоставление ролей
+
 final_tasks = process_tasks_with_roles(all_results, direction)
 
-# 4. Сортировка
 ordered_tasks = order_actions(final_tasks, direction=direction)
 
-print(f"\n--- FINAL RESULT ---")
+print(f"\nresult")
 for i, r in enumerate(ordered_tasks, 1):
     role_info = f" | Role: {r['role']}" if r.get('role') else ""
-    # Выводим ID класса, чтобы можно было проверить правильность
     print(f"{i}. [Class ID: {r['class_id']}] {r['text']}{role_info}")
 
 end = time.time()
