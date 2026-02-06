@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import time
 import io
 import numpy as np
@@ -8,12 +8,14 @@ import ollama
 from ollama import ResponseError
 from PIL import Image
 from rfdetr import RFDETRNano
+import cv2
 
 app = FastAPI(version="1.0.0")
 
 MODEL_NAME = "qwen2.5vl:3b-q4_K_M"
 WEIGHTS_PATH = "data/checkpoint_best_total_40.pth"
 THRESHOLD = 0.35
+
 MIN_SIDE = 28
 UPSCALE_SMALL = True
 
@@ -49,12 +51,45 @@ def _pil_to_png_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+def is_content_valid(pil_crop):
+    try:
+        img_np = np.array(pil_crop.convert("L"))
+        h, w = img_np.shape
+
+        if w * h < 50:
+            return False, "Too small"
+
+        mean_brightness = np.mean(img_np)
+
+        if mean_brightness < 100:
+            return False, f"Too Dark / Blackout (Mean: {mean_brightness:.1f})"
+
+        std_dev = np.std(img_np)
+        if std_dev < 10:
+            return False, f"Low Contrast / Empty (Std: {std_dev:.1f})"
+
+        _, binary = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        non_zero = cv2.countNonZero(binary)
+        density = non_zero / (w * h)
+
+        if density > 0.60:
+            return False, f"Too Dense / Image (Density: {density:.2%})"
+
+        if density < 0.005:
+            return False, f"Too Sparse / Empty (Density: {density:.2%})"
+
+        return True, "OK"
+
+    except Exception as e:
+        print(f"[FILTER ERROR] {e}")
+        return True, "Error-Pass"
+
+
 def identify_lanes_by_position_and_ratio(detections, img_w, img_h, direction) -> List[int]:
     if len(detections.class_id) == 0:
         return []
 
     if direction != "lr":
-        print(f"[AUTO-LANE] Skipping lane detection for direction '{direction}'. Lanes are only supported in LR.")
         return []
 
     boxes = detections.xyxy
@@ -70,7 +105,6 @@ def identify_lanes_by_position_and_ratio(detections, img_w, img_h, direction) ->
         if x1 < left_edge_threshold:
             if h >= (2 * w):
                 lane_indices.append(i)
-                print(f"[AUTO-LANE] Found vertical header at {box} (h={h:.0f}, w={w:.0f})")
 
     return lane_indices
 
@@ -90,8 +124,14 @@ def qwen_ocr_from_boxes(image, detections, model_name=MODEL_NAME):
         crop = image_np[y1:y2, x1:x2]
         if crop.size == 0: continue
 
-        h, w = crop.shape[:2]
         crop_pil = Image.fromarray(crop)
+
+        is_valid, reason = is_content_valid(crop_pil)
+        if not is_valid:
+            print(f"[SKIP] Box {i} ignored: {reason}")
+            continue
+
+        h, w = crop.shape[:2]
         if h < MIN_SIDE or w < MIN_SIDE:
             if UPSCALE_SMALL:
                 scale = max(MIN_SIDE / w, MIN_SIDE / h)
@@ -117,7 +157,8 @@ def qwen_ocr_from_boxes(image, detections, model_name=MODEL_NAME):
                 "role": None,
                 "label": "Unknown"
             })
-        except Exception:
+        except Exception as e:
+            print(f"Ollama error for box {i}: {e}")
             continue
 
     return results
@@ -231,9 +272,8 @@ async def predict(file: UploadFile = File(...)):
 
 @app.get("/health", tags=["System"])
 def health_check():
-    """Health check endpoint"""
     return {
         "status": "healthy",
         "detector": "RFDETR-Nano",
-        "ocr_model": MODEL_NAME
+        "ocr_model": MODEL_NAME,
     }

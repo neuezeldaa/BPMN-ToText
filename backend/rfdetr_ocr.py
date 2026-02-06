@@ -3,6 +3,7 @@ import io
 import numpy as np
 import supervision as sv
 import ollama
+import cv2
 from ollama import ResponseError
 from PIL import Image
 from rfdetr import RFDETRNano
@@ -10,9 +11,9 @@ from rfdetr import RFDETRNano
 start = time.time()
 
 MODEL_NAME = "qwen2.5vl:3b-q4_K_M"
-IMAGE_PATH = "test/3.png"
+IMAGE_PATH = "data/drive-download-20260205T175615Z-1-001/Копия_Аттракционы_Регистрация_Page_1_drawio.png"
 WEIGHTS_PATH = "data/checkpoint_best_total_40.pth"
-THRESHOLD = 0.5
+THRESHOLD = 0.30
 
 MIN_SIDE = 28
 UPSCALE_SMALL = True
@@ -24,6 +25,27 @@ def _pil_to_png_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+def is_content_valid_inverse(pil_crop):
+    img_np = np.array(pil_crop.convert("L"))
+    h, w = img_np.shape
+
+    if w * h < 100:
+        return False, "Too small"
+
+    _, binary = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    non_zero = cv2.countNonZero(binary)
+    density = non_zero / (w * h)
+
+    if density < 0.005:
+        return False, f"Empty/Blank (Density: {density:.3f})"
+
+    if density > 0.60:
+        return False, f"Solid Fill/Blackout (Density: {density:.3f})"
+
+    return True, "OK"
+
+
 def order_actions(results, direction: str):
     if not results:
         return results
@@ -33,7 +55,32 @@ def order_actions(results, direction: str):
     if direction == "td":
         return sorted(results, key=lambda r: (r["box"][1], r["box"][0]))
 
-    raise ValueError("direction must be 'lr' or 'td'")
+
+
+def show_annotated_objects(image: Image.Image, detections: sv.Detections, class_mapping: dict):
+    try:
+        print("\n[VISUALIZATION] Generating annotated image...")
+        image_np = np.array(image)
+        box_annotator = sv.BoxAnnotator()
+
+        labels = []
+        for class_id in detections.class_id:
+            class_name = class_mapping.get(class_id, str(class_id))
+            labels.append(f"{class_name}")
+
+        label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1)
+
+        annotated_frame = box_annotator.annotate(scene=image_np.copy(), detections=detections)
+        annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
+
+        try:
+            sv.plot_image(annotated_frame)
+        except Exception:
+            pass
+
+
+    except Exception as e:
+        print(f"[ERROR] Visualization failed: {e}")
 
 
 def qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME):
@@ -42,9 +89,8 @@ def qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME)
 
     prompt = "Extract text from image. Output text only."
 
-    for box, class_id in zip(detections.xyxy, detections.class_id):
+    for i, (box, class_id) in enumerate(zip(detections.xyxy, detections.class_id)):
         x1, y1, x2, y2 = map(int, box)
-
         class_name = class_mapping.get(class_id, f"Unknown-{class_id}")
 
         x1, y1 = max(0, x1), max(0, y1)
@@ -58,6 +104,12 @@ def qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME)
 
         h, w = crop.shape[:2]
         crop_pil = Image.fromarray(crop)
+
+        is_valid, reason = is_content_valid_inverse(crop_pil)
+        if not is_valid:
+            print(f"[FILTER SKIP] Class: {class_name} | Reason: {reason} | Box: {x1, y1}")
+            continue
+
 
         if h < MIN_SIDE or w < MIN_SIDE:
             if not UPSCALE_SMALL:
@@ -96,19 +148,18 @@ def qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME)
             "role": None
         })
 
+        print(f"OCR processed object {i + 1}/{len(detections.xyxy)}")
+
     return results
 
 
 def process_tasks_with_roles(results, direction):
     LANE_CLASS_ID = 1
-    TASK_CLASS_ID = 2
 
     lanes = [r for r in results if r["class_id"] == LANE_CLASS_ID]
-
     tasks = [r for r in results if r["class_id"] != LANE_CLASS_ID]
 
     if not lanes:
-        print("\n[INFO] Lanes (Class ID 1) not found. Skipping role assignment.")
         return tasks
 
     for task in tasks:
@@ -117,7 +168,6 @@ def process_tasks_with_roles(results, direction):
 
         for lane in lanes:
             lx1, ly1, lx2, ly2 = lane["box"]
-
             is_inside = False
             if direction == "lr":
                 t_center_y = (ty1 + ty2) / 2
@@ -144,17 +194,6 @@ def process_tasks_with_roles(results, direction):
     return tasks
 
 
-def show_annotated_objects(image, detections):
-    try:
-        box_annotator = sv.BoxAnnotator()
-        label_annotator = sv.LabelAnnotator()
-        annotated = box_annotator.annotate(scene=image.copy(), detections=detections)
-        annotated = label_annotator.annotate(scene=annotated, detections=detections)
-        sv.plot_image(annotated)
-    except Exception as e:
-        print(f"Visualization error: {e}")
-
-
 print("Loading RFDETR model...")
 model = RFDETRNano(pretrain_weights=WEIGHTS_PATH)
 model.optimize_for_inference()
@@ -164,7 +203,6 @@ if hasattr(model, "id2label"):
 elif hasattr(model, "classes"):
     class_mapping = {i: name for i, name in enumerate(model.classes)}
 else:
-    print("Warning: Could not find class mapping in model. Using IDs.")
     class_mapping = {}
 
 image = Image.open(IMAGE_PATH).convert("RGB")
@@ -173,24 +211,22 @@ width, height = image.size
 direction = "lr" if width > height else "td"
 print(f"Processing image {width}x{height}. Assumed direction: {direction.upper()}")
 
-
 detections = model.predict(image, threshold=THRESHOLD)
 print(f"Detections found: {len(detections.xyxy)}")
 
+if len(detections.xyxy) > 0:
+    show_annotated_objects(image, detections, class_mapping)
 
 all_results = qwen_ocr_from_boxes(image, detections, class_mapping, model_name=MODEL_NAME)
 
-
-print("\nALL DETECTED OBJECTS")
+print("\nall detected: ")
 for r in all_results:
     print(f"ID: {r['class_id']} | Text: '{r['text']}' | Box: {r['box']}")
 
-
 final_tasks = process_tasks_with_roles(all_results, direction)
-
 ordered_tasks = order_actions(final_tasks, direction=direction)
 
-print(f"\nresult")
+print(f"\n result: ")
 for i, r in enumerate(ordered_tasks, 1):
     role_info = f" | Role: {r['role']}" if r.get('role') else ""
     print(f"{i}. [Class ID: {r['class_id']}] {r['text']}{role_info}")

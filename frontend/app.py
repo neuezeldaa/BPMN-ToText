@@ -59,7 +59,7 @@ def page_image_to_text():
                     response = requests.post(
                         f"{API_URL}/predict",
                         files={"file": (img_file.name, img_file.getvalue(), img_file.type)},
-                        timeout=120
+                        timeout=300
                     )
 
                     response.raise_for_status()
@@ -138,12 +138,12 @@ def page_text_to_diagram():
             default_text = "Клиент делает заказ. Менеджер проверяет наличие. Если товар есть, склад отгружает. Иначе отмена заказа."
 
         text_input = st.text_area("Введите текст здесь:", value=default_text, height=200)
-        generate_btn = st.button("✨ Сгенерировать схему", type="primary", key="btn_text_diag")
+        generate_btn = st.button("Сгенерировать схему", type="primary", key="btn_text_diag")
 
     with col2:
         st.subheader("Предпросмотр")
         if generate_btn and text_input:
-            with st.spinner("AI генерирует Mermaid код..."):
+            with st.spinner("Генерируем Mermaid код..."):
                 try:
                     import time
                     time.sleep(0.5)
